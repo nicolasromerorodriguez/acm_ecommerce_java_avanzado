@@ -45,7 +45,26 @@ jobs:
     name: Run Unit Tests
     needs: build
     runs-on: ubuntu-latest
+    
+    # Declarar un servicio de PostgreSQL para que las pruebas puedan conectarse
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: ecommerce
+          POSTGRES_USER: store
+          POSTGRES_PASSWORD: 123456
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    
     steps:
+    
       - name: Checkout Code
         uses: actions/checkout@v4
 
