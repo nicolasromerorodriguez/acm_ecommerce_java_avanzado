@@ -1,0 +1,123 @@
+name: CI Pipeline - E-commerce Java
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write # Necesario para subir los resultados de CodeQL
+
+jobs:
+  # 1. Job de Build
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven' # Habilita la caché de dependencias de Maven
+
+      - name: Build with Maven
+        run: mvn clean compile -DskipTests
+
+  # 2. Job de Test
+  test:
+    name: Run Unit Tests
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Run Tests
+        run: mvn test
+
+  # 3. Job de Seguridad Integrada (CodeQL para el código Java)
+  codeql-analysis:
+    name: CodeQL Security Analysis
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # 4. Job de Docker (Construcción, Escaneo de Imagen y Publicación con Etiquetado Semántico)
+  docker:
+    name: Docker Build, Scan & Push
+    needs: [test, codeql-analysis]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Extracción de Etiquetado Semántico (Short-SHA y ramas/versiones)
+      - name: Extract Metadata (Tags) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semantic_version,pattern={{version}}
+
+      - name: Log in to the Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Escaneo de la imagen del contenedor con Trivy 
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          format: 'table'
+          exit-code: '0' # Cambiar a '1' si deseas que falle el pipeline ante vulnerabilidades críticas
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push Docker Image to GHCR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
