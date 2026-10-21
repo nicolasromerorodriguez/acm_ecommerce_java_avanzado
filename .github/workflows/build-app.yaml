@@ -9,10 +9,12 @@ on:
 permissions:
   contents: read
   packages: write
-  security-events: write # Necesario para subir los resultados de CodeQL
+  security-events: write
 
 jobs:
-  # 1. Job de Build
+  # -------------------------------------------------------------
+  # JOB 1: Compilación del proyecto (BUILD)
+  # -------------------------------------------------------------
   build:
     name: Build Application
     runs-on: ubuntu-latest
@@ -25,12 +27,20 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'maven' # Habilita la caché de dependencias de Maven
 
-      - name: Build with Maven
-        run: mvn clean compile -DskipTests
+      # Intenta compilar con Gradle Wrapper si existe, de lo contrario con Maven
+      - name: Build Application
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x gradlew
+            ./gradlew assemble -x test
+          else
+            mvn clean compile -DskipTests
+          fi
 
-  # 2. Job de Test
+  # -------------------------------------------------------------
+  # JOB 2: Pruebas unitarias (TEST) - Depende de 'build'
+  # -------------------------------------------------------------
   test:
     name: Run Unit Tests
     needs: build
@@ -44,12 +54,19 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'maven'
 
       - name: Run Tests
-        run: mvn test
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x gradlew
+            ./gradlew test
+          else
+            mvn test
+          fi
 
-  # 3. Job de Seguridad Integrada (CodeQL para el código Java)
+  # -------------------------------------------------------------
+  # JOB 3: Análisis Estático de Seguridad (CodeQL) - Depende de 'test'
+  # -------------------------------------------------------------
   codeql-analysis:
     name: CodeQL Security Analysis
     needs: test
@@ -69,7 +86,9 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
-  # 4. Job de Docker (Construcción, Escaneo de Imagen y Publicación con Etiquetado Semántico)
+  # -------------------------------------------------------------
+  # JOB 4: Docker Build, Escaneo Trivy y Publicación - Depende de 'test' y 'codeql-analysis'
+  # -------------------------------------------------------------
   docker:
     name: Docker Build, Scan & Push
     needs: [test, codeql-analysis]
@@ -78,7 +97,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Extracción de Etiquetado Semántico (Short-SHA y ramas/versiones)
       - name: Extract Metadata (Tags) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -87,9 +105,8 @@ jobs:
           tags: |
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
-            type=semantic_version,pattern={{version}}
 
-      - name: Log in to the Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -105,13 +122,12 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # Escaneo de la imagen del contenedor con Trivy 
-      - name: Run Trivy vulnerability scanner
+      - name: Scan Image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
           format: 'table'
-          exit-code: '0' # Cambiar a '1' si deseas que falle el pipeline ante vulnerabilidades críticas
+          exit-code: '0'
           severity: 'CRITICAL,HIGH'
 
       - name: Push Docker Image to GHCR
