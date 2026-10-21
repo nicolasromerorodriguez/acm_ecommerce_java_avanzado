@@ -22,31 +22,36 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # Intenta compilar con Gradle Wrapper si existe, de lo contrario con Maven
-      - name: Build Application
+      - name: Build Application with Gradle
         run: |
           if [ -f "./gradlew" ]; then
             chmod +x gradlew
-            ./gradlew assemble -x test
+            ./gradlew bootJar -x test || ./gradlew build -x test
           else
-            mvn clean compile -DskipTests
+            mvn clean package -DskipTests
           fi
 
+      # PASO CLAVE: Guardar el archivo .jar generado para usarlo en el job de Docker
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: build/libs/*-SNAPSHOT.jar
+          retention-days: 1
+
   # -------------------------------------------------------------
-  # JOB 2: Pruebas unitarias (TEST) - Depende de 'build'
+  # JOB 2: Pruebas unitarias (TEST)
   # -------------------------------------------------------------
   test:
     name: Run Unit Tests
     needs: build
     runs-on: ubuntu-latest
-    
-    # Declarar un servicio de PostgreSQL para que las pruebas puedan conectarse
     services:
       postgres:
         image: postgres:15-alpine
@@ -61,14 +66,11 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
-    
     steps:
-    
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -84,7 +86,7 @@ jobs:
           fi
 
   # -------------------------------------------------------------
-  # JOB 3: Análisis Estático de Seguridad (CodeQL) - Depende de 'test'
+  # JOB 3: Análisis Estático de Seguridad (CodeQL)
   # -------------------------------------------------------------
   codeql-analysis:
     name: CodeQL Security Analysis
@@ -106,7 +108,7 @@ jobs:
         uses: github/codeql-action/analyze@v3
 
   # -------------------------------------------------------------
-  # JOB 4: Docker Build, Escaneo Trivy y Publicación - Depende de 'test' y 'codeql-analysis'
+  # JOB 4: Docker Build, Escaneo Trivy y Publicación
   # -------------------------------------------------------------
   docker:
     name: Docker Build, Scan & Push
@@ -115,6 +117,13 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      # PASO CLAVE: Descargar el archivo .jar generado en el job de build
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: build/libs/
 
       - name: Extract Metadata (Tags) for Docker
         id: meta
@@ -132,7 +141,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker Image
+      - name: Build Docker Image Locally
         uses: docker/build-push-action@v5
         with:
           context: .
